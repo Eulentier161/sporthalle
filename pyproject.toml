@@ -17,7 +17,7 @@ python-dotenv = "^1.0.1"
 caldav = "^1.4.0"
 
 [tool.poetry.scripts]
-crawl = "sporthalle.crawl:main"
+sporthalle_crawl = "sporthalle.crawl:main"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.10.0"
