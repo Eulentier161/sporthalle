@@ -126,7 +126,7 @@ def find_existing_event(calendar: caldav.Calendar, event: CalendarEvent) -> cald
 def update_or_create_event(calendar: caldav.Calendar, event: CalendarEvent):
     existing_event = find_existing_event(calendar, event)
     dtstart = event.doors if event.doors else event.begin
-    dtend = add_hours_avoiding_next_day(event.begin, 4) if event.begin else add_hours_avoiding_next_day(event.doors, 6)
+    dtend = add_hours_avoiding_next_day(event.begin, 3) if event.begin else add_hours_avoiding_next_day(event.doors, 5)
     summary = f"[{event.category}] {event.artist}"
 
     if existing_event:
