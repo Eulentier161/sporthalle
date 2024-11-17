@@ -1,20 +1,25 @@
-import os
-import sys
-import re
 import logging
+import os
+import re
+import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
+from itertools import repeat
 
 import caldav
 import httpx
 from bs4 import BeautifulSoup, PageElement
 from dotenv import load_dotenv
 
-from .utils import parse_datetime, add_hours_avoiding_next_day
+from sporthalle.utils import parse_datetime, add_hours_avoiding_next_day
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
+
+
+class ElementCountMissmatchError(Exception):
+    pass
 
 
 class CalendarEvent:
@@ -36,18 +41,20 @@ class CalendarEvent:
 
     @property
     def doors_human(self) -> str:
-        return self.doors.strftime('%H:%M') if self.doors else "??:??" + " Uhr"
-    
+        return self.doors.strftime("%H:%M") if self.doors else "??:??" + " Uhr"
+
     @property
     def begin_human(self) -> str:
-        return self.begin.strftime('%H:%M') if self.begin else "??:??" + " Uhr"
-    
+        return self.begin.strftime("%H:%M") if self.begin else "??:??" + " Uhr"
+
     @property
     def day_human(self) -> str:
-        return self.day.strftime('%d.%m.%Y')
+        return self.day.strftime("%d.%m.%Y")
 
     def __repr__(self) -> str:
-        return f"[{self.category}] {self.artist} am {self.day_human} um {self.begin_human} (Einlass ab {self.doors_human})"
+        return (
+            f"[{self.category}] {self.artist} am {self.day_human} um {self.begin_human} (Einlass ab {self.doors_human})"
+        )
 
 
 def fetch_webpage_content(url: str) -> BeautifulSoup:
@@ -58,23 +65,26 @@ def fetch_webpage_content(url: str) -> BeautifulSoup:
 def find_elements(soup: BeautifulSoup) -> tuple[list[PageElement], list[PageElement]]:
     start_elements = soup.find_all(class_="rahmen_radius_l")
     end_elements = soup.find_all(style="margin-left:4px;margin-top:4px;font-size:8pt;margin-bottom:-8px")
+
+    if len(start_elements) != len(end_elements):
+        raise ElementCountMissmatchError(f"{len(start_elements)=} does not match {len(end_elements)=}.")
+    
     return start_elements, end_elements
 
 
 def collect_selected_elements(
     start_elements: list[PageElement], end_elements: list[PageElement]
 ) -> list[list[PageElement]]:
-    all_selected_elements = []
+    selected_elements = []
+    end_elements = set(end_elements)
     for start_element in start_elements:
-        selected_elements = []
+        current_group = [start_element]
         current_element = start_element
         while current_element and current_element not in end_elements:
-            selected_elements.append(current_element)
             current_element = current_element.find_next_sibling()
-        if current_element in end_elements:
-            selected_elements.append(current_element)
-        all_selected_elements.append(selected_elements)
-    return all_selected_elements
+            current_group.append(current_element)
+        selected_elements.append(current_group)
+    return selected_elements
 
 
 def parse_event(group: list[PageElement]) -> CalendarEvent | None:
@@ -106,12 +116,6 @@ def crawl() -> list[CalendarEvent]:
     return [event for event in events if event is not None]
 
 
-def delete_all_events(calendar: caldav.Calendar):
-    for event in calendar.events():
-        logging.info(f"Deleting event: {event.instance.vevent.summary.value}")
-        event.delete()
-
-
 def find_existing_event(calendar: caldav.Calendar, event: CalendarEvent) -> caldav.Event | None:
     for existing_event in calendar.events():
         existing_event_data = existing_event.instance.vevent
@@ -139,41 +143,41 @@ def update_or_create_event(calendar: caldav.Calendar, event: CalendarEvent):
             existing_event_data.dtstart.value = dtstart
             existing_event_data.dtend.value = dtend
             existing_event_data.summary.value = summary
-            existing_event.save()
+            if not "--dry-run" in sys.argv:
+                existing_event.save()
             logging.info(f"Updated event: {summary}")
         else:
             logging.info(f"No changes for event: {summary}")
     else:
-        calendar.save_event(
-            dtstart=dtstart,
-            dtend=dtend,
-            summary=summary,
-        )
+        if not "--dry-run" in sys.argv:
+            calendar.save_event(
+                dtstart=dtstart,
+                dtend=dtend,
+                summary=summary,
+            )
         logging.info(f"Created event: {summary}")
+
+
+# Function to delete an event
+def delete_event(new_event_summaries, existing_event):
+    existing_event_data = existing_event.instance.vevent
+    if existing_event_data.summary.value not in new_event_summaries:
+        logging.info(f"Deleting event: {existing_event_data.summary.value}")
+        if not "--dry-run" in sys.argv:
+            existing_event.delete()
 
 
 def sync_events(calendar: caldav.Calendar, new_events: list[CalendarEvent]):
     existing_events = calendar.events()
     new_event_summaries = {f"[{event.category}] {event.artist}" for event in new_events}
 
-    # Function to update or create an event
-    def update_or_create(event):
-        update_or_create_event(calendar, event)
-
-    # Function to delete an event
-    def delete_event(existing_event):
-        existing_event_data = existing_event.instance.vevent
-        if existing_event_data.summary.value not in new_event_summaries:
-            logging.info(f"Deleting event: {existing_event_data.summary.value}")
-            existing_event.delete()
-
     # Update or create events in parallel
     with ThreadPoolExecutor(max_workers=10) as executor:
-        executor.map(update_or_create, new_events)
+        executor.map(update_or_create_event, repeat(calendar), new_events)
 
     # Delete events not in the new events list in parallel
     with ThreadPoolExecutor(max_workers=10) as executor:
-        executor.map(delete_event, existing_events)
+        executor.map(delete_event, repeat(new_event_summaries), existing_events)
 
 
 def main():
@@ -182,15 +186,13 @@ def main():
         username=os.getenv("NEXTCLOUD_USERNAME"),
         password=os.getenv("NEXTCLOUD_PASSWORD"),
     )
-    principal = client.principal()
-    calendars = principal.calendars()
-    calendar = calendars[0]
+    calendar = client.principal().calendars()[0]
 
-    # Delete all events
-    if "--delete" in sys.argv:
-        return delete_all_events(calendar)
+    try:
+        events = crawl()
+    except (ElementCountMissmatchError, httpx.RequestError) as e:
+        return logging.error(e)
 
-    events = crawl()
     sync_events(calendar, events)
 
 

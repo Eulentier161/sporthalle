@@ -3,7 +3,7 @@ line-length = 120
 
 [tool.poetry]
 name = "sporthalle"
-version = "0.1.1"
+version = "0.1.2"
 description = "pull events from sporthalle.hamburg/terminkalender and push them to a nextcloud calendar"
 authors = ["Eulentier161 <git@eule.wtf>"]
 readme = "README.md"
