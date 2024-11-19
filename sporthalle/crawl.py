@@ -1,7 +1,7 @@
+import argparse
 import logging
 import os
 import re
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time
 from itertools import repeat
@@ -14,8 +14,6 @@ from dotenv import load_dotenv
 from sporthalle.utils import parse_datetime, add_hours_avoiding_next_day
 
 load_dotenv()
-
-logging.basicConfig(level=logging.INFO)
 
 
 class ElementCountMissmatchError(Exception):
@@ -68,7 +66,7 @@ def find_elements(soup: BeautifulSoup) -> tuple[list[PageElement], list[PageElem
 
     if len(start_elements) != len(end_elements):
         raise ElementCountMissmatchError(f"{len(start_elements)=} does not match {len(end_elements)=}.")
-    
+
     return start_elements, end_elements
 
 
@@ -127,7 +125,7 @@ def find_existing_event(calendar: caldav.Calendar, event: CalendarEvent) -> cald
     return None
 
 
-def update_or_create_event(calendar: caldav.Calendar, event: CalendarEvent):
+def update_or_create_event(calendar: caldav.Calendar, event: CalendarEvent, dry_run: bool):
     existing_event = find_existing_event(calendar, event)
     dtstart = event.doors if event.doors else event.begin
     dtend = add_hours_avoiding_next_day(event.begin, 3) if event.begin else add_hours_avoiding_next_day(event.doors, 5)
@@ -143,13 +141,13 @@ def update_or_create_event(calendar: caldav.Calendar, event: CalendarEvent):
             existing_event_data.dtstart.value = dtstart
             existing_event_data.dtend.value = dtend
             existing_event_data.summary.value = summary
-            if not "--dry-run" in sys.argv:
+            if not dry_run:
                 existing_event.save()
             logging.info(f"Updated event: {summary}")
         else:
             logging.info(f"No changes for event: {summary}")
     else:
-        if not "--dry-run" in sys.argv:
+        if not dry_run:
             calendar.save_event(
                 dtstart=dtstart,
                 dtend=dtend,
@@ -158,29 +156,35 @@ def update_or_create_event(calendar: caldav.Calendar, event: CalendarEvent):
         logging.info(f"Created event: {summary}")
 
 
-# Function to delete an event
-def delete_event(new_event_summaries, existing_event):
+def delete_event(new_event_summaries, existing_event, dry_run: bool):
     existing_event_data = existing_event.instance.vevent
     if existing_event_data.summary.value not in new_event_summaries:
         logging.info(f"Deleting event: {existing_event_data.summary.value}")
-        if not "--dry-run" in sys.argv:
+        if not dry_run:
             existing_event.delete()
 
 
-def sync_events(calendar: caldav.Calendar, new_events: list[CalendarEvent]):
+def sync_events(calendar: caldav.Calendar, new_events: list[CalendarEvent], dry_run: bool):
     existing_events = calendar.events()
     new_event_summaries = {f"[{event.category}] {event.artist}" for event in new_events}
 
     # Update or create events in parallel
     with ThreadPoolExecutor(max_workers=10) as executor:
-        executor.map(update_or_create_event, repeat(calendar), new_events)
+        executor.map(update_or_create_event, repeat(calendar), new_events, repeat(dry_run))
 
     # Delete events not in the new events list in parallel
     with ThreadPoolExecutor(max_workers=10) as executor:
-        executor.map(delete_event, repeat(new_event_summaries), existing_events)
+        executor.map(delete_event, repeat(new_event_summaries), existing_events, repeat(dry_run))
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Sync calendar events.")
+    parser.add_argument("--dry-run", action="store_true", help="Run the script without making any changes.")
+    parser.add_argument("--log-level", default="WARNING", help="Set the logging level (default: WARNING).")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=getattr(logging, args.log_level.upper(), None))
+
     client = caldav.DAVClient(
         url=os.getenv("CALENDAR_URL"),
         username=os.getenv("NEXTCLOUD_USERNAME"),
@@ -193,7 +197,7 @@ def main():
     except (ElementCountMissmatchError, httpx.RequestError) as e:
         return logging.error(e)
 
-    sync_events(calendar, events)
+    sync_events(calendar, events, args.dry_run)
 
 
 if __name__ == "__main__":
