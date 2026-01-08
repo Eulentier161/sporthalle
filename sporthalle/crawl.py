@@ -116,10 +116,10 @@ def crawl() -> list[CalendarEvent]:
 
 def find_existing_event(calendar: caldav.Calendar, event: CalendarEvent) -> caldav.Event | None:
     for existing_event in calendar.events():
-        existing_event_data = existing_event.instance.vevent
+        existing_event_data = existing_event.icalendar_component
         if (
-            existing_event_data.summary.value == f"[{event.category}] {event.artist}"
-            and existing_event_data.dtstart.value.date() == event.day
+            str(existing_event_data.get("SUMMARY", "")) == f"[{event.category}] {event.artist}"
+            and existing_event_data.get("DTSTART").dt.date() == event.day
         ):
             return existing_event
     return None
@@ -132,15 +132,15 @@ def update_or_create_event(calendar: caldav.Calendar, event: CalendarEvent, dry_
     summary = f"[{event.category}] {event.artist}"
 
     if existing_event:
-        existing_event_data = existing_event.instance.vevent
+        existing_event_data = existing_event.icalendar_component
         if (
-            existing_event_data.dtstart.value != dtstart
-            or existing_event_data.dtend.value != dtend
-            or existing_event_data.summary.value != summary
+            existing_event_data.get("DTSTART").dt != dtstart
+            or existing_event_data.get("DTEND").dt != dtend
+            or str(existing_event_data.get("SUMMARY", "")) != summary
         ):
-            existing_event_data.dtstart.value = dtstart
-            existing_event_data.dtend.value = dtend
-            existing_event_data.summary.value = summary
+            existing_event_data["DTSTART"].dt = dtstart
+            existing_event_data["DTEND"].dt = dtend
+            existing_event_data["SUMMARY"] = summary
             if not dry_run:
                 existing_event.save()
             logging.info(f"Updated event: {summary}")
@@ -157,9 +157,10 @@ def update_or_create_event(calendar: caldav.Calendar, event: CalendarEvent, dry_
 
 
 def delete_event(new_event_summaries, existing_event, dry_run: bool):
-    existing_event_data = existing_event.instance.vevent
-    if existing_event_data.summary.value not in new_event_summaries:
-        logging.info(f"Deleting event: {existing_event_data.summary.value}")
+    existing_event_data = existing_event.icalendar_component
+    summary = str(existing_event_data.get("SUMMARY", ""))
+    if summary not in new_event_summaries:
+        logging.info(f"Deleting event: {summary}")
         if not dry_run:
             existing_event.delete()
 
